@@ -21,7 +21,9 @@ genai.configure(api_key=GEMINI_API_KEY)
 # Generate using Gemini 1.5 Flash
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-FB_GROUP_URL = os.getenv("FB_GROUP_URL", "https://m.facebook.com/groups/TuitionBD/")
+# Comma-separated list of target Facebook Pages
+FB_PAGE_URLS_RAW = os.getenv("FB_PAGE_URLS", "https://m.facebook.com/tuitioninbd/")
+TARGET_PAGES = [url.strip() for url in FB_PAGE_URLS_RAW.split(",") if url.strip()]
 BACKEND_API_URL = "http://localhost:8080/api/tuitions/ingest"
 BACKEND_EXISTING_IDS_URL = "http://localhost:8080/api/tuitions/existing-post-ids"
 
@@ -47,12 +49,12 @@ def is_recent_timestamp(time_text):
         return True
     return False
 
-def extract_posts_from_fb():
+def extract_posts_from_all_pages():
     print(f"Launching Stealth Browser via SeleniumBase CDP...")
     sb_cdp = sbcdp.chrome(headless=True)
     endpoint_url = sb_cdp.get_endpoint_url()
     
-    extracted_posts = []
+    all_extracted_posts = []
     
     with sync_playwright() as p:
         print(f"Connecting Playwright to CDP Endpoint: {endpoint_url}")
@@ -60,62 +62,71 @@ def extract_posts_from_fb():
         context = browser.contexts[0] if browser.contexts else browser.new_context()
         page = context.pages[0] if context.pages else context.new_page()
         
-        print(f"Navigating to {FB_GROUP_URL}")
-        page.goto(FB_GROUP_URL)
-        
-        # Human-like delay to let the page load
-        time.sleep(5)
-        
-        # Scroll down a few times to load posts
-        for i in range(3):
-            page.mouse.wheel(0, 1000)
-            time.sleep(2)
+        for target_url in TARGET_PAGES:
+            # Normalize URL to mobile format
+            clean_url = target_url.replace("www.facebook.com", "m.facebook.com")
+            if not clean_url.startswith("http"):
+                clean_url = f"https://m.facebook.com/{clean_url}"
             
-        print("Extracting posts from DOM...")
-        # On m.facebook.com, articles usually contain the posts
-        articles = page.locator("article")
-        count = articles.count()
-        
-        for i in range(count):
-            article = articles.nth(i)
-            text_content = article.inner_text().strip()
+            # Derive page name from URL
+            page_slug = clean_url.rstrip("/").split("/")[-1]
+            print(f"\n--- Scraping Page: {page_slug} ({clean_url}) ---")
             
-            if not text_content:
-                continue
+            try:
+                page.goto(clean_url, timeout=30000)
+                time.sleep(4)
                 
-            # Attempt to extract a post ID (usually in links like /groups/.../permalink/12345/)
-            links = article.locator("a")
-            link_count = links.count()
-            post_id = f"unknown_{int(time.time())}_{i}"
-            post_url = FB_GROUP_URL
-            
-            for j in range(link_count):
-                href = links.nth(j).get_attribute("href")
-                if href and "permalink/" in href:
-                    match = re.search(r"permalink/(\d+)", href)
-                    if match:
-                        post_id = match.group(1)
-                        post_url = f"https://www.facebook.com/groups/tuition/permalink/{post_id}"
-                        break
-            
-            # Simple heuristic to find timestamp (usually the first few short lines)
-            lines = text_content.split('\n')
-            is_recent = False
-            for line in lines[:5]:
-                if is_recent_timestamp(line):
-                    is_recent = True
-                    break
+                # Scroll down to load recent posts
+                for _ in range(3):
+                    page.mouse.wheel(0, 1000)
+                    time.sleep(2)
+                
+                articles = page.locator("article, div[role='article']")
+                count = articles.count()
+                print(f"Found {count} article blocks on {page_slug}.")
+                
+                for i in range(count):
+                    article = articles.nth(i)
+                    text_content = article.inner_text().strip()
                     
-            if is_recent:
-                extracted_posts.append({
-                    "facebookPostId": post_id,
-                    "postUrl": post_url,
-                    "rawText": text_content
-                })
-        
+                    if not text_content or len(text_content) < 20:
+                        continue
+                    
+                    # Look for permalink or story fbid
+                    links = article.locator("a")
+                    link_count = links.count()
+                    post_id = f"{page_slug}_{int(time.time())}_{i}"
+                    post_url = clean_url
+                    
+                    for j in range(link_count):
+                        href = links.nth(j).get_attribute("href")
+                        if href:
+                            match = re.search(r"(?:permalink/|story_fbid=|posts/|fbid=)(\d+)", href)
+                            if match:
+                                post_id = match.group(1)
+                                post_url = f"https://www.facebook.com/{page_slug}/posts/{post_id}"
+                                break
+                    
+                    lines = text_content.split('\n')
+                    is_recent = False
+                    for line in lines[:5]:
+                        if is_recent_timestamp(line):
+                            is_recent = True
+                            break
+                            
+                    if is_recent:
+                        all_extracted_posts.append({
+                            "facebookPostId": post_id,
+                            "postUrl": post_url,
+                            "pageName": page_slug,
+                            "rawText": text_content
+                        })
+            except Exception as e:
+                print(f"Error scraping {clean_url}: {e}")
+                
         browser.close()
     
-    return extracted_posts
+    return all_extracted_posts
 
 def parse_with_gemini(posts_batch):
     if not posts_batch:
@@ -130,6 +141,7 @@ def parse_with_gemini(posts_batch):
     Each object must have exactly these keys:
     - "facebookPostId" (use the id provided in the input)
     - "postUrl" (use the url provided in the input)
+    - "pageName" (use the pageName provided in the input)
     - "index" (the index of this offer within the post, 0 for the first offer, 1 for the second, etc.)
     - "classLevel" (e.g., "Class 9", "O Level")
     - "subject" (e.g., "Math, Physics")
@@ -171,12 +183,13 @@ def send_to_backend(parsed_offers):
     for offer in parsed_offers:
         fb_id = offer.get("facebookPostId", "unknown")
         index = offer.get("index", 0)
+        page_name = offer.get("pageName", "FacebookPage")
         
         dto = {
             "compositeKey": f"{fb_id}_{index}",
             "facebookPostId": fb_id,
             "postUrl": offer.get("postUrl", ""),
-            "pageName": "TuitionBD",
+            "pageName": page_name,
             "classLevel": offer.get("classLevel"),
             "subject": offer.get("subject"),
             "location": offer.get("location"),
@@ -201,9 +214,9 @@ def run_scraper():
     # 1. Fetch already-known post IDs from database to prevent duplicate LLM calls
     existing_ids = get_existing_post_ids()
     
-    # 2. Extract recent posts from Facebook
-    recent_posts = extract_posts_from_fb()
-    print(f"Found {len(recent_posts)} recent posts (from today/yesterday).")
+    # 2. Extract recent posts from all configured Facebook pages
+    recent_posts = extract_posts_from_all_pages()
+    print(f"Total found {len(recent_posts)} recent posts across all pages.")
     
     # 3. Filter out posts already processed by database
     unseen_posts = [p for p in recent_posts if p["facebookPostId"] not in existing_ids]

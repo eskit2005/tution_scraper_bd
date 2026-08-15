@@ -53,6 +53,7 @@ public class TuitionService {
                 tuitionPostRepository.save(post);
                 newlySaved++;
             }
+        }
         return "Received: " + postDtos.size() + ", Saved: " + newlySaved + ", Duplicates Ignored: " + duplicates;
     }
 
