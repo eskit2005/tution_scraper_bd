@@ -32,6 +32,8 @@ public class TuitionPost {
     @Column(length = 2000)
     private String description;
     
+    private String postedAt;
+    
     @Column(updatable = false)
     private LocalDateTime scrapedAt;
 

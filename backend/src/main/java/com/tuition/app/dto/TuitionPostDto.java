@@ -24,5 +24,6 @@ public class TuitionPostDto {
     private String salary;
     private String genderPreference;
     private String description;
+    private String postedAt;
     private LocalDateTime scrapedAt;
 }
