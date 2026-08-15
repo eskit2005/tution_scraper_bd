@@ -58,7 +58,10 @@ public class TuitionService {
     }
 
     public List<String> getRecentFacebookPostIds(int days) {
-        java.time.LocalDateTime since = java.time.LocalDateTime.now().minusDays(days > 0 ? days : 7);
+        if (days <= 0 || days > 30) {
+            return tuitionPostRepository.findAllDistinctFacebookPostIds();
+        }
+        java.time.LocalDateTime since = java.time.LocalDateTime.now().minusDays(days);
         return tuitionPostRepository.findFacebookPostIdsScrapedSince(since);
     }
 }

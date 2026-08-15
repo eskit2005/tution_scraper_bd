@@ -3,6 +3,7 @@ import json
 import time
 import random
 import re
+import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 import requests
@@ -28,10 +29,10 @@ FALLBACK_MODELS = [
     "gemini-3-flash-preview"
 ]
 
-FB_PAGE_URLS_RAW = os.getenv("FB_PAGE_URLS", "https://m.facebook.com/tuitioninbd/")
+FB_PAGE_URLS_RAW = os.getenv("FB_PAGE_URLS", "https://m.facebook.com/BlackHoleCorporation,https://m.facebook.com/NestTutorAllBD")
 TARGET_PAGES = [url.strip() for url in FB_PAGE_URLS_RAW.split(",") if url.strip()]
 BACKEND_API_URL = "http://localhost:8080/api/tuitions/ingest"
-BACKEND_EXISTING_IDS_URL = "http://localhost:8080/api/tuitions/existing-post-ids"
+BACKEND_EXISTING_IDS_URL = "http://localhost:8080/api/tuitions/existing-post-ids?days=30"
 
 def get_existing_post_ids():
     """Fetch known Facebook Post IDs from Java backend to avoid re-parsing."""
@@ -45,12 +46,25 @@ def get_existing_post_ids():
         print(f"Notice: Could not fetch existing post IDs from backend ({e}). Proceeding without pre-filter.")
     return set()
 
+def normalize_class_level(val):
+    """Normalize classLevel to standard structured format: 'Class: <level>' or 'Class: Std-<level>'."""
+    if not val:
+        return None
+    val = val.strip()
+    # Strip any existing leading 'class\s*:\s*' or 'class\s+'
+    val = re.sub(r'^class\s*[:\-]?\s*', '', val, flags=re.IGNORECASE).strip()
+    # Handle 'std\s*[:\-]?\s*(\d+)'
+    val = re.sub(r'^std\s*[:\-]?\s*(\d+)', r'Std-\1', val, flags=re.IGNORECASE).strip()
+    if val.lower().startswith('std-'):
+        val = 'Std-' + val[4:].strip()
+    return f"Class: {val}"
+
 def extract_timestamp_from_container(container):
     """Extract human-readable post timestamp from Facebook post container."""
     # 1. Check permalink anchor tags with aria-label or text
     for link in container.find_all("a", href=True):
         href = link.get("href", "")
-        if any(k in href for k in ["/posts/", "story_fbid", "permalink"]):
+        if any(k in href for k in ["/posts/", "story_fbid", "permalink", "pfbid"]):
             aria = link.get("aria-label", "").strip()
             if aria and len(aria) < 50:
                 return aria
@@ -78,7 +92,7 @@ def extract_timestamp_from_container(container):
     if yesterday_match:
         return yesterday_match.group(1).strip()
         
-    return None
+    return "Recently"
 
 def extract_posts_from_all_pages():
     print(f"Launching Stealth Browser via SeleniumBase UC Mode...")
@@ -107,11 +121,10 @@ def extract_posts_from_all_pages():
                 except Exception:
                     pass
                 
-                # Incremental stepped scrolling with in-flight DOM harvesting
                 scroll_rounds = int(os.getenv("SCROLL_ROUNDS", "22"))
-                print(f"Deep-scrolling {scroll_rounds} times with live incremental DOM harvesting...")
+                print(f"Deep-scrolling {scroll_rounds} times with article-level DOM harvesting...")
                 
-                page_posts_dict = {} # Map post_id -> post_dict to preserve uniqueness
+                page_posts_dict = {} # Map canonical post_id -> post_dict to guarantee uniqueness
                 
                 for s_idx in range(scroll_rounds):
                     # Natural stepped scroll increment (900px to 1400px)
@@ -133,14 +146,16 @@ def extract_posts_from_all_pages():
                         document.body.style.overflow = 'auto';
                     """)
                     
-                    # Live in-flight harvest of visible articles on this scroll step
+                    # Live in-flight harvest of role="article" containers
                     step_soup = BeautifulSoup(sb.get_page_source(), "html.parser")
-                    feed_messages = step_soup.find_all("div", attrs={"data-ad-preview": "message"})
-                    if not feed_messages or len(feed_messages) < 2:
-                        feed_messages = step_soup.find_all("div", attrs={"dir": "auto"})
+                    articles = step_soup.find_all("div", attrs={"role": "article"})
+                    
+                    # Fallback to feed items if role="article" isn't found
+                    if not articles:
+                        articles = step_soup.find_all("div", attrs={"data-ad-preview": "message"})
                         
-                    for i, m in enumerate(feed_messages):
-                        text_content = m.get_text(separator="\n", strip=True)
+                    for art in articles:
+                        text_content = art.get_text(separator="\n", strip=True)
                         if len(text_content) < 50:
                             continue
                             
@@ -149,38 +164,38 @@ def extract_posts_from_all_pages():
                         if not is_tuition_related:
                             continue
                             
-                        # Identify parent container for permalink and timestamp
-                        parent = m.find_parent("div", attrs={"role": "article"}) or m.find_parent("div")
-                        post_id = f"{page_slug}_step{s_idx}_{i}"
-                        posted_at_val = None
+                        # Extract canonical post ID from permalink link
+                        post_id = None
+                        for a in art.find_all("a", href=True):
+                            href = a["href"]
+                            match = re.search(r"(?:permalink/|story_fbid=|posts/|fbid=)(\d+)", href)
+                            if match:
+                                post_id = match.group(1)
+                                break
+                            pf_match = re.search(r"(pfbid[a-zA-Z0-9]+)", href)
+                            if pf_match:
+                                post_id = pf_match.group(1)
+                                break
+                                
+                        # Deterministic fallback ID based on normalized content hash if no URL ID found
+                        if not post_id:
+                            normalized_text = re.sub(r"\s+", " ", text_content[:250]).strip()
+                            post_id = f"hash_{hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()[:16]}"
+                            
+                        posted_at_val = extract_timestamp_from_container(art)
                         
-                        if parent:
-                            posted_at_val = extract_timestamp_from_container(parent)
-                            for link in parent.find_all("a", href=True):
-                                href = link["href"]
-                                match = re.search(r"(?:permalink/|story_fbid=|posts/|fbid=)(\d+)", href)
-                                if match:
-                                    post_id = match.group(1)
-                                    break
-                                elif "pfbid" in href:
-                                    pf_match = re.search(r"(pfbid[a-zA-Z0-9]+)", href)
-                                    if pf_match:
-                                        post_id = pf_match.group(1)
-                                        break
-                                        
-                        # Key by unique text fingerprint or post_id
-                        text_hash = text_content[:120].strip()
-                        if text_hash not in page_posts_dict and post_id not in page_posts_dict:
+                        # Store in dictionary if not already captured in this session
+                        if post_id not in page_posts_dict:
                             page_posts_dict[post_id] = {
                                 "facebookPostId": post_id,
-                                "postUrl": f"https://www.facebook.com/{page_slug}/posts/{post_id}",
+                                "postUrl": f"https://www.facebook.com/{page_slug}/posts/{post_id}" if not post_id.startswith("hash_") else clean_url,
                                 "pageName": page_slug,
-                                "postedAt": posted_at_val or "Recently",
+                                "postedAt": posted_at_val,
                                 "rawText": text_content
                             }
                 
                 page_posts = list(page_posts_dict.values())
-                print(f"Extracted {len(page_posts)} full tuition posts from {page_slug}!")
+                print(f"Extracted {len(page_posts)} unique tuition posts from {page_slug}!")
                 all_extracted_posts.extend(page_posts)
             except Exception as e:
                 print(f"Error scraping {clean_url}: {e}")
@@ -207,7 +222,11 @@ def parse_with_gemini(posts_batch):
         You are an expert tuition data extractor. I will provide a JSON array of raw Facebook posts containing tuition offers.
         Many posts contain MULTIPLE separate tuition offers (e.g. numbered with A9 76970, A6 76951, Offer 1, Offer 2, Tuition Code: 30442, etc.).
         
-        For EACH distinct tuition offer found within every post:
+        CRITICAL RULES:
+        1. DO NOT extract generic promotional announcement posts, teaser headlines (e.g., "20+ available tuition in Mirpur", "ইনবক্সে সিভি দিন"), or general page notices with NO concrete student offer requirements. For such posts, return NO offers (or an empty array []).
+        2. Extract an item ONLY if it represents an actual, specific tuition offer or student job vacancy.
+        
+        For EACH valid distinct tuition offer:
         Extract all details and return a flat JSON array of objects.
         
         Each object in the returned JSON array MUST have exactly these fields:
@@ -216,7 +235,7 @@ def parse_with_gemini(posts_batch):
         - "pageName": (The page name provided in the input)
         - "postedAt": (The post publication timestamp or relative date provided in the input post header, e.g. "4m", "5 hours ago", "Yesterday at 3:15 PM", "14 August 2026")
         - "index": (Integer sub-offer index within this post, starting at 0 for the 1st offer, 1 for the 2nd, etc.)
-        - "classLevel": (e.g., "Class 9", "Class 10", "KG (English Version)", "HSC", "Play")
+        - "classLevel": (CRITICAL: Format strictly as "Class: <level>" or "Class: Std-<level>", e.g., "Class: 9", "Class: 10 (English Version)", "Class: Std-4 (EM)", "Class: HSC", "Class: Play", "Class: O-Level", "Class: 6, 9")
         - "subject": (e.g., "General Math, Higher Math", "Physics", "All Subjects")
         - "location": (Specific area, e.g. "West Agargaon, 60 Feet, Mirpur", "Aftabnagar, Block E, Dhaka")
         - "salary": (e.g., "5000 Tk / month", "2000 Tk (5 days/week)")
@@ -275,6 +294,18 @@ def send_to_backend(parsed_offers):
     current_time = datetime.now().isoformat()
     
     for offer in parsed_offers:
+        raw_desc = (offer.get("description") or "").strip()
+        raw_class = offer.get("classLevel")
+        raw_subject = offer.get("subject")
+        raw_salary = offer.get("salary")
+        
+        # Discard teaser announcements or empty non-tuition items
+        if not raw_class and not raw_subject and not raw_salary:
+            continue
+        if "available tuition" in raw_desc.lower() and not raw_subject and not raw_salary:
+            continue
+            
+        norm_class = normalize_class_level(raw_class)
         fb_id = offer.get("facebookPostId", "unknown")
         index = offer.get("index", 0)
         page_name = offer.get("pageName", "FacebookPage")
@@ -285,15 +316,19 @@ def send_to_backend(parsed_offers):
             "postUrl": offer.get("postUrl", ""),
             "pageName": page_name,
             "postedAt": offer.get("postedAt", "Recently"),
-            "classLevel": offer.get("classLevel"),
-            "subject": offer.get("subject"),
+            "classLevel": norm_class,
+            "subject": raw_subject,
             "location": offer.get("location"),
-            "salary": offer.get("salary"),
+            "salary": raw_salary,
             "genderPreference": offer.get("genderPreference"),
-            "description": offer.get("description"),
+            "description": raw_desc,
             "scrapedAt": current_time
         }
         payload.append(dto)
+        
+    if not payload:
+        print("All extracted items were non-tuition teasers. Nothing sent to backend.")
+        return
         
     print(f"Sending {len(payload)} tuition DTOs to Java Backend...")
     try:
