@@ -29,7 +29,8 @@ FALLBACK_MODELS = [
     "gemini-3-flash-preview"
 ]
 
-FB_PAGE_URLS_RAW = os.getenv("FB_PAGE_URLS", "https://m.facebook.com/BlackHoleCorporation,https://m.facebook.com/NestTutorAllBD")
+DEFAULT_FB_PAGE_URLS = "https://www.facebook.com/BlackHoleCorporation,https://www.facebook.com/NestTutorAllBD,https://www.facebook.com/tutorprovide,https://www.facebook.com/Brighttutorsbd"
+FB_PAGE_URLS_RAW = os.getenv("FB_PAGE_URLS", DEFAULT_FB_PAGE_URLS)
 TARGET_PAGES = [url.strip() for url in FB_PAGE_URLS_RAW.split(",") if url.strip()]
 BACKEND_API_URL = "http://localhost:8080/api/tuitions/ingest"
 BACKEND_EXISTING_IDS_URL = "http://localhost:8080/api/tuitions/existing-post-ids?days=30"
