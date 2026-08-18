@@ -29,7 +29,7 @@ FALLBACK_MODELS = [
     "gemini-3-flash-preview"
 ]
 
-DEFAULT_FB_PAGE_URLS = "https://www.facebook.com/BlackHoleCorporation,https://www.facebook.com/NestTutorAllBD,https://www.facebook.com/tutorprovide,https://www.facebook.com/Brighttutorsbd"
+DEFAULT_FB_PAGE_URLS = "https://m.facebook.com/BlackHoleCorporation,https://m.facebook.com/NestTutorAllBD,https://m.facebook.com/tutorprovide,https://m.facebook.com/Brighttutorsbd"
 FB_PAGE_URLS_RAW = os.getenv("FB_PAGE_URLS", DEFAULT_FB_PAGE_URLS)
 TARGET_PAGES = [url.strip() for url in FB_PAGE_URLS_RAW.split(",") if url.strip()]
 BACKEND_API_URL = "http://localhost:8080/api/tuitions/ingest"
@@ -162,9 +162,9 @@ def extract_posts_from_all_pages():
     
     with SB(uc=True, test=True, headless=True) as sb:
         for page_idx, target_url in enumerate(TARGET_PAGES):
-            clean_url = target_url.replace("m.facebook.com", "www.facebook.com")
+            clean_url = target_url.strip()
             if not clean_url.startswith("http"):
-                clean_url = f"https://www.facebook.com/{clean_url}"
+                clean_url = f"https://{clean_url}"
             
             page_slug = clean_url.rstrip("/").split("/")[-1]
             page_name = get_page_display_name(page_slug)

@@ -36,6 +36,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           BACKEND_API_URL: ${{ secrets.BACKEND_API_URL }}
+          SCROLL_ROUNDS: "25"
         run: |
           cd scraper
           python main.py
