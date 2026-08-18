@@ -40,8 +40,6 @@ jobs:
       - name: 🚀 Run Scraper
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          FB_PAGE_URLS: ${{ secrets.FB_PAGE_URLS || 'https://www.facebook.com/BlackHoleCorporation,https://www.facebook.com/NestTutorAllBD,https://www.facebook.com/tutorprovide,https://www.facebook.com/Brighttutorsbd' }}
-          FB_PAGE_NAMES: ${{ secrets.FB_PAGE_NAMES || '{"BlackHoleCorporation": "Flash Tutors", "NestTutorAllBD": "Nest Tutor", "tutorprovide": "Tutor Provide", "Brighttutorsbd": "Bright Tutors"}' }}
           BACKEND_API_URL: ${{ secrets.BACKEND_API_URL }}
         run: |
           cd scraper
