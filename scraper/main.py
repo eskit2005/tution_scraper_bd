@@ -4,7 +4,7 @@ import time
 import random
 import re
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import requests
 import google.generativeai as genai
@@ -34,6 +34,24 @@ TARGET_PAGES = [url.strip() for url in FB_PAGE_URLS_RAW.split(",") if url.strip(
 BACKEND_API_URL = "http://localhost:8080/api/tuitions/ingest"
 BACKEND_EXISTING_IDS_URL = "http://localhost:8080/api/tuitions/existing-post-ids?days=30"
 
+DEFAULT_PAGE_NAMES = {
+    "BlackHoleCorporation": "Flash Tutors",
+    "NestTutorAllBD": "Nest Tutor",
+    "tutorprovide": "Tutor Provide",
+    "Brighttutorsbd": "Bright Tutors"
+}
+
+try:
+    PAGE_NAME_MAP = json.loads(os.getenv("FB_PAGE_NAMES", "{}"))
+except Exception:
+    PAGE_NAME_MAP = {}
+PAGE_NAME_MAP = {**DEFAULT_PAGE_NAMES, **PAGE_NAME_MAP}
+
+def get_page_display_name(slug_or_url):
+    """Retrieve formatted display name for a page slug or URL."""
+    slug = slug_or_url.rstrip("/").split("/")[-1]
+    return PAGE_NAME_MAP.get(slug, slug.replace("-", " "))
+
 def get_existing_post_ids():
     """Fetch known Facebook Post IDs from Java backend to avoid re-parsing."""
     try:
@@ -58,6 +76,49 @@ def normalize_class_level(val):
     if val.lower().startswith('std-'):
         val = 'Std-' + val[4:].strip()
     return f"Class: {val}"
+
+def parse_facebook_time_to_iso(raw_time_str, ref_time=None):
+    """Convert relative Facebook post time (e.g. '10m', '2h', '1d', 'Yesterday at 3:15 PM') to absolute ISO-8601 string."""
+    if not ref_time:
+        ref_time = datetime.now()
+    if not raw_time_str or raw_time_str.lower() in ["recently", "just now"]:
+        return ref_time.isoformat()
+        
+    raw = raw_time_str.strip().lower()
+    if "t" in raw and len(raw) >= 16:
+        return raw_time_str
+        
+    # 1. Minutes ago
+    m_match = re.search(r'(\d+)\s*(?:m|min|mins|minute|minutes)\b', raw)
+    if m_match:
+        mins = int(m_match.group(1))
+        return (ref_time - timedelta(minutes=mins)).isoformat()
+        
+    # 2. Hours ago
+    h_match = re.search(r'(\d+)\s*(?:h|hr|hrs|hour|hours)\b', raw)
+    if h_match:
+        hrs = int(h_match.group(1))
+        return (ref_time - timedelta(hours=hrs)).isoformat()
+        
+    # 3. Days ago
+    d_match = re.search(r'(\d+)\s*(?:d|day|days)\b', raw)
+    if d_match:
+        days = int(d_match.group(1))
+        return (ref_time - timedelta(days=days)).isoformat()
+        
+    # 4. Yesterday
+    if 'yesterday' in raw:
+        base = ref_time - timedelta(days=1)
+        t_match = re.search(r'yesterday at (\d{1,2}):(\d{2})\s*(am|pm)?', raw)
+        if t_match:
+            hr, mn = int(t_match.group(1)), int(t_match.group(2))
+            mer = t_match.group(3)
+            if mer == 'pm' and hr < 12: hr += 12
+            if mer == 'am' and hr == 12: hr = 0
+            return base.replace(hour=hr, minute=mn, second=0, microsecond=0).isoformat()
+        return base.isoformat()
+        
+    return ref_time.isoformat()
 
 def extract_timestamp_from_container(container):
     """Extract human-readable post timestamp from Facebook post container."""
@@ -105,7 +166,8 @@ def extract_posts_from_all_pages():
                 clean_url = f"https://www.facebook.com/{clean_url}"
             
             page_slug = clean_url.rstrip("/").split("/")[-1]
-            print(f"\n--- Scraping Page: {page_slug} ({clean_url}) ---")
+            page_name = get_page_display_name(page_slug)
+            print(f"\n--- Scraping Page: {page_name} ({clean_url}) ---")
             
             # Add polite human-like jitter between pages if multiple pages are configured
             if page_idx > 0:
@@ -182,20 +244,22 @@ def extract_posts_from_all_pages():
                             normalized_text = re.sub(r"\s+", " ", text_content[:250]).strip()
                             post_id = f"hash_{hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()[:16]}"
                             
-                        posted_at_val = extract_timestamp_from_container(art)
+                        posted_at_raw = extract_timestamp_from_container(art)
+                        posted_at_iso = parse_facebook_time_to_iso(posted_at_raw)
                         
                         # Store in dictionary if not already captured in this session
                         if post_id not in page_posts_dict:
                             page_posts_dict[post_id] = {
                                 "facebookPostId": post_id,
                                 "postUrl": f"https://www.facebook.com/{page_slug}/posts/{post_id}" if not post_id.startswith("hash_") else clean_url,
-                                "pageName": page_slug,
-                                "postedAt": posted_at_val,
+                                "pageName": page_name,
+                                "postedAt": posted_at_iso,
+                                "postedAtRaw": posted_at_raw,
                                 "rawText": text_content
                             }
                 
                 page_posts = list(page_posts_dict.values())
-                print(f"Extracted {len(page_posts)} unique tuition posts from {page_slug}!")
+                print(f"Extracted {len(page_posts)} unique tuition posts from {page_name}!")
                 all_extracted_posts.extend(page_posts)
             except Exception as e:
                 print(f"Error scraping {clean_url}: {e}")
@@ -233,7 +297,7 @@ def parse_with_gemini(posts_batch):
         - "facebookPostId": (The post ID provided in the input)
         - "postUrl": (The URL provided in the input)
         - "pageName": (The page name provided in the input)
-        - "postedAt": (The post publication timestamp or relative date provided in the input post header, e.g. "4m", "5 hours ago", "Yesterday at 3:15 PM", "14 August 2026")
+        - "postedAt": (The exact ISO timestamp provided in the input post header, e.g. "2026-08-19T02:20:00")
         - "index": (Integer sub-offer index within this post, starting at 0 for the 1st offer, 1 for the 2nd, etc.)
         - "classLevel": (CRITICAL: Format strictly as "Class: <level>" or "Class: Std-<level>", e.g., "Class: 9", "Class: 10 (English Version)", "Class: Std-4 (EM)", "Class: HSC", "Class: Play", "Class: O-Level", "Class: 6, 9")
         - "subject": (e.g., "General Math, Higher Math", "Physics", "All Subjects")
@@ -306,16 +370,19 @@ def send_to_backend(parsed_offers):
             continue
             
         norm_class = normalize_class_level(raw_class)
+        raw_page = offer.get("pageName", "FacebookPage")
+        page_name = get_page_display_name(raw_page)
         fb_id = offer.get("facebookPostId", "unknown")
         index = offer.get("index", 0)
-        page_name = offer.get("pageName", "FacebookPage")
         
+        published_at = offer.get("postedAt", current_time)
         dto = {
             "compositeKey": f"{fb_id}_{index}",
             "facebookPostId": fb_id,
             "postUrl": offer.get("postUrl", ""),
             "pageName": page_name,
-            "postedAt": offer.get("postedAt", "Recently"),
+            "publishedAt": published_at,
+            "postedAt": offer.get("postedAtRaw") or "Recently",
             "classLevel": norm_class,
             "subject": raw_subject,
             "location": offer.get("location"),

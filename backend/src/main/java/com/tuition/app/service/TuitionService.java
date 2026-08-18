@@ -8,6 +8,7 @@ import com.tuition.app.repository.TuitionPostSpecification;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
@@ -61,7 +62,7 @@ public class TuitionService {
         if (days <= 0 || days > 30) {
             return tuitionPostRepository.findAllDistinctFacebookPostIds();
         }
-        java.time.LocalDateTime since = java.time.LocalDateTime.now().minusDays(days);
+        LocalDateTime since = LocalDateTime.now().minusDays(days);
         return tuitionPostRepository.findFacebookPostIdsScrapedSince(since);
     }
 }

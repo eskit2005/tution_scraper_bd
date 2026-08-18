@@ -2,6 +2,7 @@ package com.tuition.app.entity;
 
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.Formula;
 import java.time.LocalDateTime;
 
 @Entity
@@ -34,11 +35,29 @@ public class TuitionPost {
     
     private String postedAt;
     
+    private LocalDateTime publishedAt;
+    
+    @Formula("""
+        CASE
+            WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(published_at, scraped_at))) < 60 THEN 'Just now'
+            WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(published_at, scraped_at))) < 3600 THEN FLOOR(EXTRACT(EPOCH FROM (NOW() - COALESCE(published_at, scraped_at))) / 60)::TEXT || 'm'
+            WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(published_at, scraped_at))) < 86400 THEN FLOOR(EXTRACT(EPOCH FROM (NOW() - COALESCE(published_at, scraped_at))) / 3600)::TEXT || 'h'
+            ELSE FLOOR(EXTRACT(EPOCH FROM (NOW() - COALESCE(published_at, scraped_at))) / 86400)::TEXT || 'd'
+        END
+    """)
+    private String timeElapsed;
+    
     @Column(updatable = false)
     private LocalDateTime scrapedAt;
 
     @PrePersist
-    protected void onCreate() {
-        this.scrapedAt = LocalDateTime.now();
+    @PreUpdate
+    protected void onSave() {
+        if (this.scrapedAt == null) {
+            this.scrapedAt = LocalDateTime.now();
+        }
+        if (this.publishedAt == null) {
+            this.publishedAt = this.scrapedAt;
+        }
     }
 }
