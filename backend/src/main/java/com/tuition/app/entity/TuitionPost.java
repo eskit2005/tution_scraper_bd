@@ -33,8 +33,6 @@ public class TuitionPost {
     @Column(length = 2000)
     private String description;
     
-    private String postedAt;
-    
     private LocalDateTime publishedAt;
     
     @Formula("""

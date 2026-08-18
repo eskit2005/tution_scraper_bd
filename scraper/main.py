@@ -245,7 +245,7 @@ def extract_posts_from_all_pages():
                             post_id = f"hash_{hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()[:16]}"
                             
                         posted_at_raw = extract_timestamp_from_container(art)
-                        posted_at_iso = parse_facebook_time_to_iso(posted_at_raw)
+                        published_at_iso = parse_facebook_time_to_iso(posted_at_raw)
                         
                         # Store in dictionary if not already captured in this session
                         if post_id not in page_posts_dict:
@@ -253,8 +253,7 @@ def extract_posts_from_all_pages():
                                 "facebookPostId": post_id,
                                 "postUrl": f"https://www.facebook.com/{page_slug}/posts/{post_id}" if not post_id.startswith("hash_") else clean_url,
                                 "pageName": page_name,
-                                "postedAt": posted_at_iso,
-                                "postedAtRaw": posted_at_raw,
+                                "publishedAt": published_at_iso,
                                 "rawText": text_content
                             }
                 
@@ -297,7 +296,7 @@ def parse_with_gemini(posts_batch):
         - "facebookPostId": (The post ID provided in the input)
         - "postUrl": (The URL provided in the input)
         - "pageName": (The page name provided in the input)
-        - "postedAt": (The exact ISO timestamp provided in the input post header, e.g. "2026-08-19T02:20:00")
+        - "publishedAt": (The exact ISO timestamp provided in the input post header, e.g. "2026-08-19T02:20:00")
         - "index": (Integer sub-offer index within this post, starting at 0 for the 1st offer, 1 for the 2nd, etc.)
         - "classLevel": (CRITICAL: Format strictly as "Class: <level>" or "Class: Std-<level>", e.g., "Class: 9", "Class: 10 (English Version)", "Class: Std-4 (EM)", "Class: HSC", "Class: Play", "Class: O-Level", "Class: 6, 9")
         - "subject": (e.g., "General Math, Higher Math", "Physics", "All Subjects")
@@ -375,14 +374,13 @@ def send_to_backend(parsed_offers):
         fb_id = offer.get("facebookPostId", "unknown")
         index = offer.get("index", 0)
         
-        published_at = offer.get("postedAt", current_time)
+        published_at = offer.get("publishedAt", current_time)
         dto = {
             "compositeKey": f"{fb_id}_{index}",
             "facebookPostId": fb_id,
             "postUrl": offer.get("postUrl", ""),
             "pageName": page_name,
             "publishedAt": published_at,
-            "postedAt": offer.get("postedAtRaw") or "Recently",
             "classLevel": norm_class,
             "subject": raw_subject,
             "location": offer.get("location"),
